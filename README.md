@@ -19,6 +19,7 @@
 
 | Feature                    | Lab     | Description                                                         |
 | -------------------------- | ------- | ------------------------------------------------------------------- |
+| 🚀 **Deliverability Tool** | New     | Evaluate email spam risk using TF-IDF & simulated ML classifiers    |
 | 🔬 **N-gram Analysis**     | Lab 5-B | Build Unigram, Bigram, Trigram models; view top N-grams with counts |
 | 📊 **Perplexity**          | Lab 5-B | MLE, Laplace, and Backoff perplexity with visual bar charts         |
 | 🔗 **Sentence Completion** | Lab 5-A | Spell-correct prefix + predict next word using bigram model         |
@@ -59,6 +60,15 @@ The right-side panel has **3 tabs**:
 
 ---
 
+## 🚀 Deliverability Analyzer
+
+The right-side panel also includes a dedicated tab for testing email deliverability.
+- Features a **Deliverability Score** ranging from 0-100% (High Risk vs Safe).
+- Scans the document using simulated TF-IDF features and outputs a breakdown across three classifiers (Naive Bayes, SVM, Logistic Regression).
+- Flags high-risk spam keywords dynamically inside the editor canvas with an indigo dashed underline.
+
+---
+
 ## 🚀 Getting Started
 
 ### Option 1 — Docker (Recommended)
@@ -79,8 +89,14 @@ docker-compose up --build
 
 **Terminal 1 — Backend:**
 
+Create and activate a virtual environment (Python 3.11 is recommended):
+
 ```bash
 cd backend
+python3.11 -m venv venv
+source venv/bin/activate  # On macOS/Linux
+# or on Windows: venv\Scripts\activate
+
 pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8000
 ```
@@ -121,6 +137,14 @@ Spell-correct and complete a sentence.
 
 ```json
 { "text": "I am Sam. She is reading.", "prefix": "I am goin" }
+```
+
+### POST `/analyze-deliverability`
+
+Analyze text for spam keywords and return a mock classification score.
+
+```json
+{ "text": "This is an urgent message to win free money." }
 ```
 
 ---

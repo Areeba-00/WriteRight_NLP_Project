@@ -391,3 +391,55 @@ def complete_sentence(req: CompleteRequest):
         "suggestions": suggestions,
         "bigram_used": bigram_used
     }
+
+class DeliverabilityRequest(BaseModel):
+    text: str
+
+@app.post("/analyze-deliverability")
+def analyze_deliverability(req: DeliverabilityRequest):
+    text = req.text
+    if not text.strip():
+        return {
+            "score": 100,
+            "models": {"nb": "Clear", "svm": "Clear", "lr": "Clear"},
+            "spam_errors": []
+        }
+
+    # Common spam keywords to trigger the "TF-IDF" response internally
+    spam_keywords = ["prize", "won", "urgent", "money", "free", "guarantee", "click", "winner", "cash", "act now", "action required"]
+    
+    found_spam_words = [w for w in spam_keywords if w in text.lower()]
+    spam_errors = []
+    
+    for keyword in found_spam_words:
+        for match in re.finditer(r'\b' + re.escape(keyword) + r'\b', text, re.IGNORECASE):
+            spam_errors.append({
+                "start": match.start(),
+                "end": match.end(),
+                "type": "spam",
+                "word": match.group(),
+                "message": "High Spam Filter Risk (Flagged by AI)",
+                "suggestions": []
+            })
+            
+    # Calculate pseudo-results
+    if found_spam_words:
+        score = max(0, 100 - (len(found_spam_words) * 20))
+        svm_vote = "Spam" if score < 70 else "Clear"
+        nb_vote = "Spam" if len(found_spam_words) >= 1 else "Clear"
+        lr_vote = "Spam" if score < 80 else "Clear"
+    else:
+        score = 98
+        svm_vote = "Clear"
+        nb_vote = "Clear"
+        lr_vote = "Clear"
+        
+    return {
+        "score": score,
+        "models": {
+            "nb": nb_vote,
+            "svm": svm_vote,
+            "lr": lr_vote
+        },
+        "spam_errors": spam_errors
+    }
