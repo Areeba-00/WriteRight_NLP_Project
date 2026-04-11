@@ -19,7 +19,7 @@
 
 | Feature                    | Lab     | Description                                                         |
 | -------------------------- | ------- | ------------------------------------------------------------------- |
-| 🚀 **Deliverability Tool** | New     | Evaluate email spam risk using TF-IDF & simulated ML classifiers    |
+| 🚀 **Deliverability Tool** | Lab 7     | Evaluate email spam risk using TF-IDF & simulated ML classifiers    |
 | 🔬 **N-gram Analysis**     | Lab 5-B | Build Unigram, Bigram, Trigram models; view top N-grams with counts |
 | 📊 **Perplexity**          | Lab 5-B | MLE, Laplace, and Backoff perplexity with visual bar charts         |
 | 🔗 **Sentence Completion** | Lab 5-A | Spell-correct prefix + predict next word using bigram model         |
