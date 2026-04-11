@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import axios from "axios";
 import "./App.css";
+import DeliverabilityDashboard from "./DeliverabilityDashboard";
 
 const API = "http://localhost:8000";
 
@@ -31,7 +32,9 @@ function buildHighlightedHTML(text, errors) {
         ? "err-spell"
         : err.type === "grammar"
           ? "err-grammar"
-          : "err-context";
+          : err.type === "spam"
+            ? "err-spam"
+            : "err-context";
     const word = text.slice(err.start, err.end);
     html += `<span class="${cls}" data-msg="${escHtml(err.message)}" data-sugg="${escHtml((err.suggestions || []).join(","))}" data-start="${err.start}" data-end="${err.end}">${escHtml(word)}</span>`;
     pos = err.end;
@@ -95,6 +98,12 @@ function Tooltip({ x, y, message, suggestions, type, onClose }) {
       label: "🟢 Contextual Hint",
       color: "#276749",
     },
+    spam: {
+      bg: "rgba(79, 70, 229, 0.1)",
+      border: "#4F46E5",
+      label: "🚨 Spam Risk",
+      color: "#4F46E5",
+    }
   };
   const c = colors[type] || colors.spelling;
   const suggs = suggestions ? suggestions.filter(Boolean) : [];
@@ -706,6 +715,7 @@ function LabPanel({ editorText }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [errors, setErrors] = useState([]);
+  const [spamErrors, setSpamErrors] = useState([]);
   const [loading, setLoading] = useState(false);
   const [wordCount, setWordCount] = useState(0);
   const [charCount, setCharCount] = useState(0);
@@ -717,6 +727,7 @@ export default function App() {
   const editorRef = useRef(null);
   const debounceRef = useRef(null);
   const errorsRef = useRef([]);
+  const spamErrorsRef = useRef([]);
   const plainTextRef = useRef("");
 
   useEffect(() => {
@@ -757,7 +768,7 @@ export default function App() {
     if (!text.trim()) {
       setErrors([]);
       errorsRef.current = [];
-      applyHighlights(text, []);
+      applyHighlights(text, spamErrorsRef.current);
       return;
     }
     setLoading(true);
@@ -765,7 +776,7 @@ export default function App() {
       const { data } = await axios.post(`${API}/check`, { text });
       setErrors(data);
       errorsRef.current = data;
-      applyHighlights(text, data);
+      applyHighlights(text, [...data, ...spamErrorsRef.current]);
     } catch {
       /* ignore */
     } finally {
@@ -781,6 +792,8 @@ export default function App() {
     setEditorText(text);
     updateCounts(text);
     setTooltip(null);
+    setSpamErrors([]);
+    spamErrorsRef.current = [];
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => checkText(text), 600);
   }
@@ -802,7 +815,9 @@ export default function App() {
         ? "spelling"
         : span.classList.contains("err-grammar")
           ? "grammar"
-          : "contextual",
+          : span.classList.contains("err-spam")
+            ? "spam"
+            : "contextual",
     });
   }
 
@@ -819,7 +834,13 @@ export default function App() {
     }
   }
 
-  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5"];
+  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability"];
+
+  function handleSpamResult(newSpamErrors) {
+    setSpamErrors(newSpamErrors);
+    spamErrorsRef.current = newSpamErrors;
+    applyHighlights(plainTextRef.current, [...errorsRef.current, ...newSpamErrors]);
+  }
 
   return (
     <div className="app" onClick={() => setTooltip(null)}>
@@ -936,8 +957,16 @@ export default function App() {
         {/* Error Sidebar */}
         <ErrorSidebar errors={errors} />
 
-        {/* Lab 5 Panel — always visible on right */}
-        <LabPanel editorText={editorText} />
+        {/* Highlight panels on the right */}
+        {activeRibbonTab === "🚀 Deliverability" ? (
+          <DeliverabilityDashboard 
+             editorText={editorText} 
+             onSpamResult={handleSpamResult} 
+             apiStatus={apiStatus} 
+          />
+        ) : (
+          <LabPanel editorText={editorText} />
+        )}
       </div>
 
       {/* ── Status bar ────────────────────────────────────────── */}

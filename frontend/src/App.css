@@ -353,6 +353,16 @@
   border-radius: 2px;
 }
 
+.err-spam {
+  text-decoration: underline dashed #4F46E5 2px;
+  text-decoration-skip-ink: none;
+  cursor: pointer;
+}
+.err-spam:hover {
+  background: rgba(79, 70, 229, 0.1);
+  border-radius: 2px;
+}
+
 /* ═══════════════════════════════════════════
    TOOLTIP POPUP
 ═══════════════════════════════════════════ */
