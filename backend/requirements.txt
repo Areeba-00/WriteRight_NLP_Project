@@ -2,3 +2,9 @@ fastapi==0.115.0
 uvicorn==0.30.6
 pyspellchecker==0.8.2
 pydantic==2.9.2
+
+# Optional - only needed for Stage 2 of Network NER (fine-tuned spaCy model).
+# The rule-based extractor works without these. Uncomment + reinstall to train:
+#   pip install -r requirements.txt
+#   python -m spacy download en_core_web_sm
+# spacy==3.7.5

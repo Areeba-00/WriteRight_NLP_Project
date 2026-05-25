@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import axios from "axios";
 import "./App.css";
 import DeliverabilityDashboard from "./DeliverabilityDashboard";
+import NetworkNerDashboard from "./NetworkNerDashboard";
 
 const API = "http://localhost:8000";
 
@@ -834,7 +835,7 @@ export default function App() {
     }
   }
 
-  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability"];
+  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability", "🌐 Network NER"];
 
   function handleSpamResult(newSpamErrors) {
     setSpamErrors(newSpamErrors);
@@ -964,6 +965,8 @@ export default function App() {
              onSpamResult={handleSpamResult} 
              apiStatus={apiStatus} 
           />
+        ) : activeRibbonTab === "🌐 Network NER" ? (
+          <NetworkNerDashboard editorText={editorText} />
         ) : (
           <LabPanel editorText={editorText} />
         )}
