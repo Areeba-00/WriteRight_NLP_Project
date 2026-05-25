@@ -444,222 +444,259 @@ def analyze_deliverability(req: DeliverabilityRequest):
         "spam_errors": spam_errors
     }
 
-# ═══════════════════════════════════════════
-#  NETWORK CONFIGURATION INTENT EXTRACTION (NER)
-# ═══════════════════════════════════════════
+# ============================================================================
+# NETWORK CONFIGURATION INTENT EXTRACTION (NER) - SIDE-BY-SIDE COMPARISON
+# ============================================================================
 #
-# Extracts five entities from unstructured network configuration text:
-#   SOURCE_NODE, DESTINATION_NODE, INTERMEDIATE_NODE, BANDWIDTH, PACKET_LOSS
+# This block APPENDS to backend/main.py. It REPLACES the previous
+# rule-based-only section. Search for `extract-network-intent` in main.py and
+# delete the old block first if it's still there, then paste this in.
 #
-# Stage 1 (always on):  rule-based regex extractor below.
-# Stage 2 (optional):   fine-tuned spaCy NER model auto-loaded from
-#                       backend/ner_model/ if present. Training script and
-#                       labeled dataset live in dataset/ and training/.
+# Adds:
+#   - Rule-based extractor (NER_*, _ner_rule_extract)
+#   - Fine-tuned spaCy extractor (_ner_model_extract) - lazy-loaded
+#   - Agreement computation
+#   - Endpoints:
+#       POST /extract-network-intent  -> returns BOTH approaches + agreement
+#       GET  /network-ner/health      -> reports model availability
+#
+# Requires `re` and `BaseModel` (already imported at top of main.py).
+# spaCy is optional - if the model isn't trained yet, the endpoint still
+# returns rule-based results and notes that model_based is unavailable.
+# ============================================================================
 
-# A "node" surface form: Router A, Node 1, Switch B, Server 12, R1, SW-3, etc.
-_NER_NODE = r"(?:Router|Node|Switch|Server|Host|Gateway|Firewall|Endpoint|R|SW|GW)\s*[\w\-]+"
+import re as _ner_re
+from pathlib import Path as _NerPath
+from typing import List as _NerList, Dict as _NerDict, Optional as _NerOptional
+from pydantic import BaseModel as _NerBaseModel
 
-NER_PATTERNS = {
-    "SOURCE_NODE": re.compile(
-        rf"(?:\bfrom|\bstarting\s+at|\borigin(?:ating\s+(?:at|from))?)\s+({_NER_NODE})",
-        re.IGNORECASE,
-    ),
-    "DESTINATION_NODE": re.compile(
-        rf"(?:\bto|\btoward(?:s)?|\bdestined\s+(?:for|to)|\barriving\s+at)\s+({_NER_NODE})",
-        re.IGNORECASE,
-    ),
-    "INTERMEDIATE_NODE": re.compile(
-        rf"(?:\bvia|\bthrough|\bpassing\s+through|\brelay(?:ed)?\s+(?:by|through)|\bhopping\s+(?:via|through))\s+({_NER_NODE})",
-        re.IGNORECASE,
-    ),
-}
+# ---------- Pydantic models ----------
 
-NER_BANDWIDTH_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(bps|kbps|mbps|gbps|tbps)\b",
-    re.IGNORECASE,
-)
+class NetworkIntentRequest(_NerBaseModel):
+    text: str
 
-NER_PACKET_LOSS_RE = re.compile(
-    r"(?:packet\s+loss(?:\s+of)?\s+(?:below|under|less\s+than|<)?\s*"
-    r"(\d+(?:\.\d+)?\s*%)"
-    r"|(\d+(?:\.\d+)?\s*%)\s+packet\s+loss"
-    r"|loss\s+(?:below|under|less\s+than|<)\s*(\d+(?:\.\d+)?\s*%))",
-    re.IGNORECASE,
-)
+# ---------- Rule-based extractor (Stage 1) ----------
 
-
-def _ner_clean(node: str) -> str:
-    """Collapse whitespace in a node surface form."""
-    return re.sub(r"\s+", " ", node).strip()
+# Order matters: try the most specific phrasing first.
+NER_SRC_PATTERNS = [
+    r"\bfrom\s+([A-Z][\w\s]*?\w)(?=\s+(?:to|towards|→))",
+    r"\bsource(?:\s*node)?[:=]\s*([A-Z][\w\s]*?\w)(?=[,.\s]|$)",
+]
+NER_DST_PATTERNS = [
+    r"\bto\s+([A-Z][\w\s]*?\w)(?=\s+(?:via|through|hopping|with|at|,|\.|and|$))",
+    r"\bdestination(?:\s*node)?[:=]\s*([A-Z][\w\s]*?\w)(?=[,.\s]|$)",
+]
+NER_MID_PATTERNS = [
+    r"\b(?:via|through|hopping\s+through)\s+([A-Z][\w\s]*?\w)(?=\s+(?:with|at|,|\.|and|$))",
+    r"\bintermediate(?:\s*node)?[:=]\s*([A-Z][\w\s]*?\w)(?=[,.\s]|$)",
+]
+NER_BW_PATTERN = r"\b(\d+(?:\.\d+)?\s*(?:Mbps|Gbps|Kbps|mbps|gbps|kbps))\b"
+NER_PL_PATTERNS = [
+    r"\bpacket\s+loss\s+(below|less\s+than|under)\s+([\d.]+\s*%)",
+    r"\bpacket\s+loss\s+([\d.]+\s*%)",
+    r"\b(below|less\s+than|under)\s+([\d.]+\s*%)\s+packet\s+loss",
+    r"\b([\d.]+\s*%)\s+packet\s+loss",
+]
 
 
-def _ner_extract_rules(text: str) -> list:
-    """Run all regex patterns; return flat list of entity dicts."""
+def _ner_first_match(text: str, patterns: _NerList[str]):
+    for pat in patterns:
+        m = _ner_re.search(pat, text, flags=_ner_re.IGNORECASE)
+        if m:
+            # find the capturing group that actually matched
+            for g in m.groups():
+                if g:
+                    return g.strip(), m.start(), m.end()
+    return None
+
+
+def _ner_rule_extract(text: str) -> _NerDict:
+    """Rule-based extraction. Returns {entities: [...], structured: {...}}."""
     entities = []
+    structured = {
+        "source_node": None,
+        "destination_node": None,
+        "intermediate_node": None,
+        "bandwidth": None,
+        "packet_loss": None,
+    }
 
-    for label, pat in NER_PATTERNS.items():
-        for m in pat.finditer(text):
-            entities.append({
-                "label": label,
-                "value": _ner_clean(m.group(1)),
-                "start": m.start(1),
-                "end": m.end(1),
-                "source": "rule",
-                "confidence": 0.9,
-            })
+    def add(label, key, patterns):
+        result = _ner_first_match(text, patterns)
+        if result:
+            value, start, end = result
+            # Snap entity start/end to the actual captured value, not the full match
+            value_start = text.find(value, start)
+            if value_start >= 0:
+                entities.append({
+                    "label": label, "text": value,
+                    "start": value_start, "end": value_start + len(value),
+                })
+                structured[key] = value
 
-    for m in NER_BANDWIDTH_RE.finditer(text):
-        entities.append({
-            "label": "BANDWIDTH",
-            "value": f"{m.group(1)} {m.group(2)}",
-            "start": m.start(),
-            "end": m.end(),
-            "source": "rule",
-            "confidence": 0.95,
-        })
+    add("SOURCE_NODE", "source_node", NER_SRC_PATTERNS)
+    add("DESTINATION_NODE", "destination_node", NER_DST_PATTERNS)
+    add("INTERMEDIATE_NODE", "intermediate_node", NER_MID_PATTERNS)
 
-    for m in NER_PACKET_LOSS_RE.finditer(text):
-        pct = next((g for g in m.groups() if g), "").strip()
-        span_text = text[m.start():m.end()]
-        qualifier = ""
-        for q in ("below", "under", "less than", "<"):
-            if q in span_text.lower():
-                qualifier = q + " "
-                break
-        entities.append({
-            "label": "PACKET_LOSS",
-            "value": f"{qualifier}{pct}".strip(),
-            "start": m.start(),
-            "end": m.end(),
-            "source": "rule",
-            "confidence": 0.9,
-        })
+    bw = _ner_re.search(NER_BW_PATTERN, text)
+    if bw:
+        entities.append({"label": "BANDWIDTH", "text": bw.group(1),
+                         "start": bw.start(1), "end": bw.end(1)})
+        structured["bandwidth"] = bw.group(1)
 
-    return entities
+    for pat in NER_PL_PATTERNS:
+        m = _ner_re.search(pat, text, flags=_ner_re.IGNORECASE)
+        if m:
+            # combine all captured groups into one value string
+            parts = [g.strip() for g in m.groups() if g]
+            value = " ".join(parts)
+            # locate the combined value in text
+            value_start = m.start(1)
+            value_end = m.end(m.lastindex)
+            entities.append({"label": "PACKET_LOSS", "text": text[value_start:value_end],
+                             "start": value_start, "end": value_end})
+            structured["packet_loss"] = text[value_start:value_end]
+            break
+
+    entities.sort(key=lambda e: e["start"])
+    return {"entities": entities, "structured": structured}
 
 
-# Lazy-load the optional spaCy model. Cached after first attempt.
-_ner_nlp = None
-_ner_tried = False
+# ---------- Model-based extractor (Stage 2, lazy-loaded) ----------
+
+_NER_MODEL = None
+_NER_MODEL_ERROR: _NerOptional[str] = None
+_NER_MODEL_PATH = _NerPath(__file__).resolve().parent.parent / "training" / "model-best"
+
 
 def _ner_load_model():
-    """Load backend/ner_model/ if it exists; return None otherwise."""
-    global _ner_nlp, _ner_tried
-    if _ner_tried:
-        return _ner_nlp
-    _ner_tried = True
+    """Load the spaCy model once on first use. Cache load errors so we don't retry every request."""
+    global _NER_MODEL, _NER_MODEL_ERROR
+    if _NER_MODEL is not None or _NER_MODEL_ERROR is not None:
+        return _NER_MODEL
+
     try:
-        from pathlib import Path
-        model_path = Path(__file__).parent / "ner_model"
-        if not model_path.exists():
-            return None
         import spacy
-        _ner_nlp = spacy.load(str(model_path))
-    except Exception:
-        _ner_nlp = None
-    return _ner_nlp
+    except ImportError:
+        _NER_MODEL_ERROR = "spaCy is not installed. Run: pip install spacy==3.7.5"
+        return None
+
+    if not _NER_MODEL_PATH.exists():
+        _NER_MODEL_ERROR = (f"Trained model not found at {_NER_MODEL_PATH}. "
+                            f"Run: python training/train_ner.py")
+        return None
+
+    try:
+        _NER_MODEL = spacy.load(str(_NER_MODEL_PATH))
+        return _NER_MODEL
+    except Exception as e:
+        _NER_MODEL_ERROR = f"Failed to load model: {e}"
+        return None
 
 
-def _ner_extract_model(text: str) -> list:
-    """Run the trained spaCy model if available; return [] otherwise."""
+def _ner_model_extract(text: str) -> _NerOptional[_NerDict]:
+    """Fine-tuned spaCy extraction. Returns None if model unavailable."""
     nlp = _ner_load_model()
     if nlp is None:
-        return []
+        return None
+
     doc = nlp(text)
-    valid = {"SOURCE_NODE", "DESTINATION_NODE", "INTERMEDIATE_NODE", "BANDWIDTH", "PACKET_LOSS"}
-    return [
-        {
-            "label": ent.label_,
-            "value": ent.text,
-            "start": ent.start_char,
-            "end": ent.end_char,
-            "source": "model",
-            "confidence": 0.8,
-        }
-        for ent in doc.ents if ent.label_ in valid
-    ]
-
-
-# Merge preference: regex wins for quantitative fields; model wins for node assignments.
-_NER_PREFER_MODEL = {"SOURCE_NODE", "DESTINATION_NODE", "INTERMEDIATE_NODE"}
-
-
-def _ner_merge(rule_ents: list, model_ents: list) -> list:
-    """Return ALL rule entities, plus model entities for labels rule missed
-    or where the model has stronger node assignment. Used for the entity
-    chips and highlighted-text view; slot-filling happens separately in
-    _ner_structured which picks first-occurrence per label."""
-    out = list(rule_ents)
-    seen_spans = {(e["start"], e["end"]) for e in out}
-    for e in model_ents:
-        if (e["start"], e["end"]) not in seen_spans:
-            out.append(e)
-            seen_spans.add((e["start"], e["end"]))
-    return out
-
-
-def _ner_structured(entities: list) -> dict:
-    """Slot-filled output matching the task spec's expected table format."""
-    slots = {
-        "source_node": "Not mentioned",
-        "destination_node": "Not mentioned",
-        "intermediate_node": "Not mentioned",
-        "bandwidth": "Not mentioned",
-        "packet_loss": "Not mentioned",
+    entities = []
+    structured = {
+        "source_node": None,
+        "destination_node": None,
+        "intermediate_node": None,
+        "bandwidth": None,
+        "packet_loss": None,
     }
-    label_to_slot = {
+    label_to_key = {
         "SOURCE_NODE": "source_node",
         "DESTINATION_NODE": "destination_node",
         "INTERMEDIATE_NODE": "intermediate_node",
         "BANDWIDTH": "bandwidth",
         "PACKET_LOSS": "packet_loss",
     }
-    for e in entities:
-        slot = label_to_slot.get(e["label"])
-        if slot and slots[slot] == "Not mentioned":
-            slots[slot] = e["value"]
-    return slots
+    for ent in doc.ents:
+        entities.append({
+            "label": ent.label_, "text": ent.text,
+            "start": ent.start_char, "end": ent.end_char,
+        })
+        key = label_to_key.get(ent.label_)
+        if key and structured[key] is None:
+            structured[key] = ent.text
+
+    entities.sort(key=lambda e: e["start"])
+    return {"entities": entities, "structured": structured}
 
 
-class NetworkIntentRequest(BaseModel):
-    text: str
-    use_model: bool = True
+# ---------- Agreement / comparison ----------
 
+def _ner_compute_agreement(rule_result: _NerDict, model_result: _NerOptional[_NerDict]) -> _NerDict:
+    """Compare structured outputs slot-by-slot."""
+    if model_result is None:
+        return {"available": False, "reason": _NER_MODEL_ERROR or "Model unavailable."}
+
+    slots = ["source_node", "destination_node", "intermediate_node", "bandwidth", "packet_loss"]
+    matches = 0
+    differences = []
+    for slot in slots:
+        rv = rule_result["structured"].get(slot)
+        mv = model_result["structured"].get(slot)
+        # normalize for comparison: lowercase + strip
+        rv_norm = rv.strip().lower() if rv else None
+        mv_norm = mv.strip().lower() if mv else None
+        if rv_norm == mv_norm:
+            matches += 1
+        else:
+            differences.append({
+                "slot": slot,
+                "rule_based": rv,
+                "model_based": mv,
+            })
+    return {
+        "available": True,
+        "matches": matches,
+        "total": len(slots),
+        "differences": differences,
+    }
+
+
+# ---------- Endpoints ----------
 
 @app.post("/extract-network-intent")
 def extract_network_intent(req: NetworkIntentRequest):
-    if not req.text or not req.text.strip():
-        return {
-            "text": req.text,
-            "entities": [],
-            "structured": {
-                "source_node": "Not mentioned",
-                "destination_node": "Not mentioned",
-                "intermediate_node": "Not mentioned",
-                "bandwidth": "Not mentioned",
-                "packet_loss": "Not mentioned",
-            },
-            "model_used": False,
-        }
+    import time as _ner_time
+    text = req.text or ""
 
-    rule_ents = _ner_extract_rules(req.text)
-    model_ents = _ner_extract_model(req.text) if req.use_model else []
-    all_ents = _ner_merge(rule_ents, model_ents)
-    all_ents.sort(key=lambda e: e["start"])
+    t0 = _ner_time.perf_counter()
+    rule_result = _ner_rule_extract(text)
+    rule_ms = round((_ner_time.perf_counter() - t0) * 1000, 2)
+    rule_result["timing_ms"] = rule_ms
 
-    # Slot-filling uses first-occurrence per label (the table view).
-    # The full entity list is returned for chips + highlighting.
+    t1 = _ner_time.perf_counter()
+    model_result = _ner_model_extract(text)
+    model_ms = round((_ner_time.perf_counter() - t1) * 1000, 2)
+    if model_result is not None:
+        model_result["timing_ms"] = model_ms
+
+    agreement = _ner_compute_agreement(rule_result, model_result)
+
     return {
-        "text": req.text,
-        "entities": all_ents,
-        "structured": _ner_structured(all_ents),
-        "model_used": bool(model_ents),
+        "text": text,
+        "rule_based": rule_result,
+        "model_based": model_result,
+        "agreement": agreement,
     }
 
 
 @app.get("/network-ner/health")
 def network_ner_health():
+    nlp = _ner_load_model()
     return {
-        "status": "ok",
-        "model_loaded": _ner_load_model() is not None,
+        "rule_based": "ok",
+        "model_based": "ok" if nlp is not None else "unavailable",
+        "model_error": _NER_MODEL_ERROR,
+        "model_path": str(_NER_MODEL_PATH),
+        "labels": ["SOURCE_NODE", "DESTINATION_NODE",
+                   "INTERMEDIATE_NODE", "BANDWIDTH", "PACKET_LOSS"],
     }

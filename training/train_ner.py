@@ -1,127 +1,149 @@
 """
-train_ner.py
-Fine-tune a spaCy NER model on the network configuration dataset.
+Train a spaCy NER model on the network configuration dataset.
 
-Usage:
-    pip install spacy
-    python -m spacy download en_core_web_sm
-    python train_ner.py --data ../dataset/network_config_dataset.jsonl \\
-                       --output ../backend/ner_model \\
-                       --iterations 30
+Usage (from the repo root):
+    python training/train_ner.py
 
-The trained model is written to ../backend/ner_model and is auto-detected
-by network_ner.py at request time (no code change needed in the API layer).
-
-This is intentionally a Stage 2 enhancement: the rule-based extractor
-already covers the assigned task end-to-end. Training the model here lets
-the system generalize to paraphrased sentences ("send the data starting
-at R1 and arriving at R7") that fall outside the regex patterns.
+Produces:
+    training/model-best/        # the trained pipeline (load with spacy.load)
+    training/training.log       # human-readable metrics
 """
 
-from __future__ import annotations
-
-import argparse
 import json
 import random
 from pathlib import Path
 
+import spacy
+from spacy.tokens import DocBin
+from spacy.training import Example
+from spacy.util import minibatch, compounding
 
-def load_data(path: Path) -> list[tuple[str, dict]]:
-    """Read JSONL dataset and convert to spaCy training format."""
+
+LABELS = ["SOURCE_NODE", "DESTINATION_NODE",
+          "INTERMEDIATE_NODE", "BANDWIDTH", "PACKET_LOSS"]
+
+
+def load_jsonl(path: Path):
     examples = []
-    with path.open() as f:
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            rec = json.loads(line)
-            entities = [(start, end, label) for start, end, label in rec["entities"]]
-            examples.append((rec["text"], {"entities": entities}))
+            examples.append(json.loads(line))
     return examples
 
 
-def train(data_path: Path, output_dir: Path, iterations: int, seed: int) -> None:
-    """Train a fresh spaCy NER pipeline (blank English base)."""
-    try:
-        import spacy
-        from spacy.training import Example
-    except ImportError:
-        raise SystemExit(
-            "spaCy is not installed. Run: pip install spacy && "
-            "python -m spacy download en_core_web_sm"
-        )
+def to_spacy_format(examples):
+    """Convert our JSONL format to spaCy's (text, {"entities": [(start, end, label), ...]}) format."""
+    out = []
+    for ex in examples:
+        ents = [(e["start"], e["end"], e["label"]) for e in ex["entities"]]
+        out.append((ex["text"], {"entities": ents}))
+    return out
 
-    examples_raw = load_data(data_path)
-    random.seed(seed)
-    random.shuffle(examples_raw)
 
-    # 80/20 train/dev split
-    split = int(len(examples_raw) * 0.8)
-    train_raw = examples_raw[:split]
-    dev_raw = examples_raw[split:]
-    print(f"Loaded {len(examples_raw)} examples ({len(train_raw)} train / {len(dev_raw)} dev)")
+def split(data, ratio=0.85, seed=42):
+    rng = random.Random(seed)
+    data = data.copy()
+    rng.shuffle(data)
+    cut = int(len(data) * ratio)
+    return data[:cut], data[cut:]
 
-    # Blank English pipeline + fresh NER component
+
+def evaluate(nlp, eval_data):
+    """Per-label precision / recall / F1 plus micro-average."""
+    tp = {lbl: 0 for lbl in LABELS}
+    fp = {lbl: 0 for lbl in LABELS}
+    fn = {lbl: 0 for lbl in LABELS}
+
+    for text, annot in eval_data:
+        gold = set((s, e, l) for s, e, l in annot["entities"])
+        pred = set((ent.start_char, ent.end_char, ent.label_) for ent in nlp(text).ents)
+
+        for span in pred:
+            if span in gold:
+                tp[span[2]] += 1
+            else:
+                fp[span[2]] += 1
+        for span in gold:
+            if span not in pred:
+                fn[span[2]] += 1
+
+    per_label = {}
+    total_tp = total_fp = total_fn = 0
+    for lbl in LABELS:
+        p = tp[lbl] / (tp[lbl] + fp[lbl]) if (tp[lbl] + fp[lbl]) else 0.0
+        r = tp[lbl] / (tp[lbl] + fn[lbl]) if (tp[lbl] + fn[lbl]) else 0.0
+        f1 = 2 * p * r / (p + r) if (p + r) else 0.0
+        per_label[lbl] = {"precision": p, "recall": r, "f1": f1,
+                          "tp": tp[lbl], "fp": fp[lbl], "fn": fn[lbl]}
+        total_tp += tp[lbl]; total_fp += fp[lbl]; total_fn += fn[lbl]
+
+    micro_p = total_tp / (total_tp + total_fp) if (total_tp + total_fp) else 0.0
+    micro_r = total_tp / (total_tp + total_fn) if (total_tp + total_fn) else 0.0
+    micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r) if (micro_p + micro_r) else 0.0
+
+    return {"per_label": per_label,
+            "micro": {"precision": micro_p, "recall": micro_r, "f1": micro_f1}}
+
+
+def train(n_iter=30, dropout=0.2):
+    here = Path(__file__).resolve().parent
+    dataset_path = here.parent / "dataset" / "network_config_dataset.jsonl"
+    model_out = here / "model-best"
+    log_out = here / "training.log"
+
+    print(f"Loading dataset from {dataset_path}...")
+    raw = load_jsonl(dataset_path)
+    data = to_spacy_format(raw)
+    train_data, eval_data = split(data, ratio=0.85)
+    print(f"  Total: {len(data)}  |  train: {len(train_data)}  |  eval: {len(eval_data)}")
+
+    # blank English pipeline + NER component
     nlp = spacy.blank("en")
     ner = nlp.add_pipe("ner")
+    for lbl in LABELS:
+        ner.add_label(lbl)
 
-    labels = {"SOURCE_NODE", "DESTINATION_NODE", "INTERMEDIATE_NODE", "BANDWIDTH", "PACKET_LOSS"}
-    for label in labels:
-        ner.add_label(label)
+    # convert train_data to Example objects (needed by recent spaCy versions)
+    train_examples = []
+    for text, annot in train_data:
+        doc = nlp.make_doc(text)
+        train_examples.append(Example.from_dict(doc, annot))
 
-    # Convert to Example objects
-    train_examples = [
-        Example.from_dict(nlp.make_doc(text), ann) for text, ann in train_raw
-    ]
-    dev_examples = [
-        Example.from_dict(nlp.make_doc(text), ann) for text, ann in dev_raw
-    ]
+    optimizer = nlp.initialize(lambda: train_examples)
 
-    optimizer = nlp.begin_training()
-    for itn in range(iterations):
+    log_lines = [f"Training spaCy NER for {n_iter} iterations on {len(train_data)} examples"]
+    print(log_lines[-1])
+
+    for itn in range(n_iter):
         random.shuffle(train_examples)
-        losses: dict = {}
-        for example in train_examples:
-            nlp.update([example], drop=0.3, losses=losses, sgd=optimizer)
+        losses = {}
+        batches = minibatch(train_examples, size=compounding(4.0, 16.0, 1.5))
+        for batch in batches:
+            nlp.update(batch, drop=dropout, losses=losses, sgd=optimizer)
+        line = f"  iter {itn + 1:>2}/{n_iter}  loss={losses.get('ner', 0.0):.3f}"
+        print(line)
+        log_lines.append(line)
 
-        # Light dev evaluation
-        if dev_examples:
-            scores = nlp.evaluate(dev_examples)
-            print(
-                f"iter {itn + 1:02d} | loss={losses.get('ner', 0):.3f} "
-                f"| P={scores.get('ents_p', 0):.2f} "
-                f"R={scores.get('ents_r', 0):.2f} "
-                f"F1={scores.get('ents_f', 0):.2f}"
-            )
-        else:
-            print(f"iter {itn + 1:02d} | loss={losses.get('ner', 0):.3f}")
+    # final evaluation
+    print("\nEvaluating on held-out set...")
+    metrics = evaluate(nlp, eval_data)
+    log_lines.append("\n=== Final metrics (eval set) ===")
+    for lbl, m in metrics["per_label"].items():
+        line = f"  {lbl:<18} P={m['precision']:.3f}  R={m['recall']:.3f}  F1={m['f1']:.3f}  (tp={m['tp']}, fp={m['fp']}, fn={m['fn']})"
+        print(line); log_lines.append(line)
+    micro = metrics["micro"]
+    line = f"  {'MICRO AVG':<18} P={micro['precision']:.3f}  R={micro['recall']:.3f}  F1={micro['f1']:.3f}"
+    print(line); log_lines.append(line)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    nlp.to_disk(output_dir)
-    print(f"\nModel saved to {output_dir}")
-    print("network_ner.py will auto-load it on the next request.")
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--data",
-        type=Path,
-        default=Path(__file__).parent.parent / "dataset" / "network_config_dataset.jsonl",
-        help="Path to the JSONL dataset.",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path(__file__).parent.parent / "backend" / "ner_model",
-        help="Where to save the trained model.",
-    )
-    parser.add_argument("--iterations", type=int, default=30)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    train(args.data, args.output, args.iterations, args.seed)
+    # save model + log
+    nlp.to_disk(model_out)
+    log_out.write_text("\n".join(log_lines), encoding="utf-8")
+    print(f"\nModel saved to: {model_out}")
+    print(f"Log saved to:   {log_out}")
 
 
 if __name__ == "__main__":
-    main()
+    train()
