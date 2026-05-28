@@ -1,0 +1,39 @@
+Training spaCy NER for 30 iterations on 68 examples
+  iter  1/30  loss=1191.374
+  iter  2/30  loss=591.043
+  iter  3/30  loss=433.805
+  iter  4/30  loss=562.453
+  iter  5/30  loss=538.009
+  iter  6/30  loss=607.816
+  iter  7/30  loss=495.919
+  iter  8/30  loss=322.335
+  iter  9/30  loss=183.130
+  iter 10/30  loss=104.613
+  iter 11/30  loss=41.336
+  iter 12/30  loss=12.941
+  iter 13/30  loss=2.417
+  iter 14/30  loss=0.136
+  iter 15/30  loss=0.008
+  iter 16/30  loss=0.000
+  iter 17/30  loss=0.000
+  iter 18/30  loss=0.001
+  iter 19/30  loss=0.001
+  iter 20/30  loss=0.000
+  iter 21/30  loss=0.000
+  iter 22/30  loss=0.000
+  iter 23/30  loss=0.000
+  iter 24/30  loss=0.000
+  iter 25/30  loss=0.000
+  iter 26/30  loss=0.000
+  iter 27/30  loss=0.000
+  iter 28/30  loss=0.000
+  iter 29/30  loss=0.000
+  iter 30/30  loss=0.000
+
+=== Final metrics (eval set) ===
+  SOURCE_NODE        P=1.000  R=1.000  F1=1.000  (tp=12, fp=0, fn=0)
+  DESTINATION_NODE   P=1.000  R=1.000  F1=1.000  (tp=12, fp=0, fn=0)
+  INTERMEDIATE_NODE  P=0.909  R=0.909  F1=0.909  (tp=10, fp=1, fn=1)
+  BANDWIDTH          P=1.000  R=1.000  F1=1.000  (tp=11, fp=0, fn=0)
+  PACKET_LOSS        P=1.000  R=1.000  F1=1.000  (tp=12, fp=0, fn=0)
+  MICRO AVG          P=0.983  R=0.983  F1=0.983
