@@ -8,3 +8,10 @@ pydantic==2.9.2
 #   pip install -r requirements.txt
 #   python -m spacy download en_core_web_sm
 spacy==3.7.5
+
+# News NLP module (summarization + headline generation via HuggingFace).
+# Models lazy-load on first request and cache in ~/.cache/huggingface.
+transformers>=4.40.0
+torch>=2.0.0
+# Required by Michau/t5-base-en-generate-headline (T5Tokenizer is SentencePiece-based).
+sentencepiece>=0.2.0

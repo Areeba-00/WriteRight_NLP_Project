@@ -3,6 +3,7 @@ import axios from "axios";
 import "./App.css";
 import DeliverabilityDashboard from "./DeliverabilityDashboard";
 import NetworkNerDashboard from "./NetworkNerDashboard";
+import NewsNlpDashboard from "./NewsNlpDashboard";
 
 const API = "http://localhost:8000";
 
@@ -835,7 +836,7 @@ export default function App() {
     }
   }
 
-  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability", "🌐 Network NER"];
+  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability", "🌐 Network NER", "📰 News NLP"];
 
   function handleSpamResult(newSpamErrors) {
     setSpamErrors(newSpamErrors);
@@ -967,6 +968,8 @@ export default function App() {
           />
         ) : activeRibbonTab === "🌐 Network NER" ? (
           <NetworkNerDashboard editorText={editorText} />
+        ) : activeRibbonTab === "📰 News NLP" ? (
+          <NewsNlpDashboard editorText={editorText} />
         ) : (
           <LabPanel editorText={editorText} />
         )}
