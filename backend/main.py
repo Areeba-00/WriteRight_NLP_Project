@@ -6,6 +6,13 @@ import re
 from typing import List
 from collections import Counter
 import math
+from fastapi import UploadFile, File
+from fastapi.responses import StreamingResponse
+from deep_translator import GoogleTranslator
+import docx
+import pdfplumber
+import io
+
 
 app = FastAPI(title="Word Editor API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -700,3 +707,74 @@ def network_ner_health():
         "labels": ["SOURCE_NODE", "DESTINATION_NODE",
                    "INTERMEDIATE_NODE", "BANDWIDTH", "PACKET_LOSS"],
     }
+
+
+# ============================================================================
+# MACHINE TRANSLATION MODULE (English-to-Urdu)
+# ============================================================================
+
+class TranslateTextRequest(BaseModel):
+    text: str
+
+@app.post("/translate/text")
+def translate_text(req: TranslateTextRequest):
+    if not req.text.strip():
+        return {"original": "", "translated": ""}
+        
+    # Swap this line out later if using Hugging Face MarianMT
+    translated = GoogleTranslator(source='en', target='ur').translate(req.text)
+    return {"original": req.text, "translated": translated}
+
+@app.post("/translate/document")
+async def translate_document(file: UploadFile = File(...)):
+    content = await file.read()
+    
+    # 1. Handle Word Documents (.docx)
+    if file.filename.endswith(".docx"):
+        doc = docx.Document(io.BytesIO(content))
+        out_doc = docx.Document()
+        
+        for para in doc.paragraphs:
+            if para.text.strip():
+                translated_text = GoogleTranslator(source='en', target='ur').translate(para.text)
+                # Preserve alignment/heading styles roughly by adding as standard paragraphs
+                out_doc.add_paragraph(translated_text)
+            else:
+                out_doc.add_paragraph("") # Preserve spacing
+                
+        # Save translated document to memory buffer
+        out_io = io.BytesIO()
+        out_doc.save(out_io)
+        out_io.seek(0)
+        
+        return StreamingResponse(
+            out_io, 
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename=URDU_{file.filename}"}
+        )
+        
+    # 2. Handle PDF Documents (.pdf)
+    elif file.filename.endswith(".pdf"):
+        extracted_text = ""
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    extracted_text += page_text + "\n\n"
+        
+        # Translate the extracted text in chunks (APIs usually have length limits)
+        translated_text = ""
+        paragraphs = extracted_text.split("\n\n")
+        for para in paragraphs:
+            if para.strip():
+                translated_text += GoogleTranslator(source='en', target='ur').translate(para) + "\n\n"
+        
+        # Return as a text file since regenerating PDFs programmatically loses exact layout
+        out_io = io.BytesIO(translated_text.encode('utf-8'))
+        return StreamingResponse(
+            out_io,
+            media_type="text/plain",
+            headers={"Content-Disposition": f"attachment; filename=URDU_{file.filename.replace('.pdf', '.txt')}"}
+        )
+        
+    return {"error": "Unsupported file format. Please upload a .docx or .pdf file."}
