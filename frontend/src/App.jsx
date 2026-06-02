@@ -4,6 +4,7 @@ import "./App.css";
 import DeliverabilityDashboard from "./DeliverabilityDashboard";
 import NetworkNerDashboard from "./NetworkNerDashboard";
 import NewsNlpDashboard from "./NewsNlpDashboard";
+import TranslationDashboard from "./TranslationDashboard";
 
 const API = "http://localhost:8000";
 
@@ -105,7 +106,7 @@ function Tooltip({ x, y, message, suggestions, type, onClose }) {
       border: "#4F46E5",
       label: "🚨 Spam Risk",
       color: "#4F46E5",
-    }
+    },
   };
   const c = colors[type] || colors.spelling;
   const suggs = suggestions ? suggestions.filter(Boolean) : [];
@@ -837,11 +838,24 @@ export default function App() {
   }
 
   const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability", "🌐 Network NER", "📰 News NLP"];
+  const RIBBON_TABS = [
+    "Home",
+    "Insert",
+    "View",
+    "Review",
+    "🔬 Lab 5",
+    "🚀 Deliverability",
+    "🌐 Network NER",
+    "🌍 Translation",
+  ];
 
   function handleSpamResult(newSpamErrors) {
     setSpamErrors(newSpamErrors);
     spamErrorsRef.current = newSpamErrors;
-    applyHighlights(plainTextRef.current, [...errorsRef.current, ...newSpamErrors]);
+    applyHighlights(plainTextRef.current, [
+      ...errorsRef.current,
+      ...newSpamErrors,
+    ]);
   }
 
   return (
@@ -961,15 +975,17 @@ export default function App() {
 
         {/* Highlight panels on the right */}
         {activeRibbonTab === "🚀 Deliverability" ? (
-          <DeliverabilityDashboard 
-             editorText={editorText} 
-             onSpamResult={handleSpamResult} 
-             apiStatus={apiStatus} 
+          <DeliverabilityDashboard
+            editorText={editorText}
+            onSpamResult={handleSpamResult}
+            apiStatus={apiStatus}
           />
         ) : activeRibbonTab === "🌐 Network NER" ? (
           <NetworkNerDashboard editorText={editorText} />
         ) : activeRibbonTab === "📰 News NLP" ? (
           <NewsNlpDashboard editorText={editorText} />
+        ) : activeRibbonTab === "🌍 Translation" ? (
+          <TranslationDashboard editorText={editorText} />
         ) : (
           <LabPanel editorText={editorText} />
         )}
