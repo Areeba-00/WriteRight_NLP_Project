@@ -710,6 +710,281 @@ def network_ner_health():
 
 
 # ============================================================================
+# NEWS HEADLINE GENERATION & TEXT SUMMARIZATION
+# ============================================================================
+#
+# This block APPENDS to backend/main.py. It is self-contained and uses
+# `_news_` / `_NEWS_` prefixes to avoid collisions with the Network NER
+# module that already lives in the file.
+#
+# Models (lazy-loaded on first request):
+#   - Summarization: sshleifer/distilbart-cnn-12-6
+#       (~1.2 GB, distilled BART fine-tuned on CNN/DailyMail)
+#   - Headline:      Michau/t5-base-en-generate-headline
+#       (~890 MB, T5-base fine-tuned on news headlines)
+#
+# Both download once from HuggingFace and cache in ~/.cache/huggingface.
+# First request is slow (~30 sec download + load), subsequent requests are
+# ~2-5 sec per generation on CPU.
+#
+# Endpoints:
+#   POST /news/summarize       -> generate summary only
+#   POST /news/headline        -> generate headline only
+#   POST /news/generate        -> generate both (recommended for the UI)
+#   GET  /news/health          -> reports model availability
+# ============================================================================
+
+import time as _news_time
+from typing import Optional as _NewsOptional
+from pydantic import BaseModel as _NewsBaseModel, Field as _NewsField
+
+# ---------- Pydantic models ----------
+
+class NewsGenerateRequest(_NewsBaseModel):
+    text: str
+    summary_length: _NewsOptional[str] = _NewsField(default="medium",
+        description="One of: short | medium | long")
+    headline_strategy: _NewsOptional[str] = _NewsField(default="beam",
+        description="One of: beam | sampling")
+
+
+# ---------- Length presets ----------
+
+# Summarizer min/max token budgets per length preset
+_NEWS_SUMMARY_PRESETS = {
+    "short":  {"min_length": 25,  "max_length": 60},
+    "medium": {"min_length": 50,  "max_length": 130},
+    "long":   {"min_length": 100, "max_length": 220},
+}
+
+_NEWS_HEADLINE_BEAM = {
+    "max_length": 84,
+    "num_beams": 4,
+    "no_repeat_ngram_size": 2,
+    "early_stopping": True,
+    "do_sample": False,
+}
+
+_NEWS_HEADLINE_SAMPLING = {
+    "max_length": 84,
+    "do_sample": True,
+    "top_k": 50,
+    "top_p": 0.95,
+    "temperature": 0.9,
+    "no_repeat_ngram_size": 2,
+}
+
+
+# ---------- Lazy model loaders ----------
+
+_NEWS_SUMMARIZER = None
+_NEWS_SUMMARIZER_TOKENIZER = None
+_NEWS_SUMMARIZER_ERROR: _NewsOptional[str] = None
+_NEWS_HEADLINER = None
+_NEWS_HEADLINER_TOKENIZER = None
+_NEWS_HEADLINER_ERROR: _NewsOptional[str] = None
+
+
+def _news_load_summarizer():
+    """Load t5-small summarization model + tokenizer on first use.
+
+    Uses Falconsai/text_summarization (~240 MB) - a t5-small variant
+    actually fine-tuned on summarization data (the plain google-t5/t5-small
+    is not trained on summarization and produces extractive copy-paste).
+    """
+    global _NEWS_SUMMARIZER, _NEWS_SUMMARIZER_TOKENIZER, _NEWS_SUMMARIZER_ERROR
+    if _NEWS_SUMMARIZER is not None or _NEWS_SUMMARIZER_ERROR is not None:
+        return _NEWS_SUMMARIZER, _NEWS_SUMMARIZER_TOKENIZER
+    try:
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        model_name = "Falconsai/text_summarization"
+        _NEWS_SUMMARIZER_TOKENIZER = AutoTokenizer.from_pretrained(model_name)
+        _NEWS_SUMMARIZER = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        _NEWS_SUMMARIZER.eval()
+        return _NEWS_SUMMARIZER, _NEWS_SUMMARIZER_TOKENIZER
+    except ImportError as e:
+        _NEWS_SUMMARIZER_ERROR = (f"Missing dependency: {e}. "
+                                   "Run: pip install transformers torch sentencepiece")
+    except Exception as e:
+        _NEWS_SUMMARIZER_ERROR = f"Failed to load summarizer: {e}"
+    return None, None
+
+
+def _news_load_headliner():
+    """Load t5-small headline-generation model + tokenizer on first use.
+
+    Uses JulesBelveze/t5-small-headline-generator (~240 MB), fine-tuned on
+    the tldr_news dataset. Uses AutoTokenizer for format auto-detection.
+    """
+    global _NEWS_HEADLINER, _NEWS_HEADLINER_TOKENIZER, _NEWS_HEADLINER_ERROR
+    if _NEWS_HEADLINER is not None or _NEWS_HEADLINER_ERROR is not None:
+        return _NEWS_HEADLINER, _NEWS_HEADLINER_TOKENIZER
+    try:
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        model_name = "JulesBelveze/t5-small-headline-generator"
+        _NEWS_HEADLINER_TOKENIZER = AutoTokenizer.from_pretrained(model_name)
+        _NEWS_HEADLINER = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+        _NEWS_HEADLINER.eval()
+        return _NEWS_HEADLINER, _NEWS_HEADLINER_TOKENIZER
+    except ImportError as e:
+        _NEWS_HEADLINER_ERROR = (f"Missing dependency: {e}. "
+                                  "Run: pip install transformers torch sentencepiece")
+    except Exception as e:
+        _NEWS_HEADLINER_ERROR = f"Failed to load headliner: {e}"
+    return None, None
+
+
+# ---------- Generation helpers ----------
+
+def _news_clean_input(text: str) -> str:
+    """Light input cleanup: strip, collapse whitespace, cap absurd lengths."""
+    text = (text or "").strip()
+    text = " ".join(text.split())
+    # distilBART can handle ~1024 tokens; truncate roughly to 5000 chars to be safe
+    if len(text) > 5000:
+        text = text[:5000]
+    return text
+
+
+def _news_generate_summary(text: str, length: str = "medium") -> dict:
+    """Returns {summary, timing_ms, length_preset, input_chars, output_chars} or {error}."""
+    model, tokenizer = _news_load_summarizer()
+    if model is None or tokenizer is None:
+        return {"error": _NEWS_SUMMARIZER_ERROR or "Summarizer unavailable."}
+
+    preset = _NEWS_SUMMARY_PRESETS.get(length, _NEWS_SUMMARY_PRESETS["medium"])
+    t0 = _news_time.perf_counter()
+    try:
+        # Falconsai/text_summarization takes raw article text - no prefix needed
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            max_length=512,
+            truncation=True,
+        )
+        output_ids = model.generate(
+            inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            min_length=preset["min_length"],
+            max_length=preset["max_length"],
+            num_beams=4,
+            no_repeat_ngram_size=3,
+            early_stopping=True,
+            do_sample=False,
+        )
+        summary = tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
+    except Exception as e:
+        return {"error": f"Summarization failed: {e}"}
+    elapsed_ms = round((_news_time.perf_counter() - t0) * 1000, 1)
+
+    compression = 0.0
+    if text:
+        compression = round(1.0 - (len(summary) / len(text)), 3)
+
+    return {
+        "summary": summary,
+        "timing_ms": elapsed_ms,
+        "length_preset": length,
+        "input_chars": len(text),
+        "output_chars": len(summary),
+        "compression_ratio": compression,
+    }
+
+
+def _news_generate_headline(text: str, strategy: str = "beam") -> dict:
+    """Returns {headline, timing_ms, strategy} or {error}."""
+    model, tokenizer = _news_load_headliner()
+    if model is None or tokenizer is None:
+        return {"error": _NEWS_HEADLINER_ERROR or "Headliner unavailable."}
+
+    # JulesBelveze/t5-small-headline-generator does NOT use a task prefix -
+    # it was fine-tuned to take raw article text as input.
+    # Do NOT use padding="max_length" - for short inputs it pads heavily and
+    # the small model degenerates into producing repeated tokens like "WW W / W/W".
+    gen_kwargs = _NEWS_HEADLINE_SAMPLING if strategy == "sampling" else _NEWS_HEADLINE_BEAM
+
+    t0 = _news_time.perf_counter()
+    try:
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=384,
+        )
+        output_ids = model.generate(
+            inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            **gen_kwargs,
+        )
+        headline = tokenizer.decode(
+            output_ids[0],
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ).strip()
+    except Exception as e:
+        return {"error": f"Headline generation failed: {e}"}
+    elapsed_ms = round((_news_time.perf_counter() - t0) * 1000, 1)
+
+    return {
+        "headline": headline,
+        "timing_ms": elapsed_ms,
+        "strategy": strategy,
+    }
+
+
+# ---------- Endpoints ----------
+
+@app.post("/news/summarize")
+def news_summarize(req: NewsGenerateRequest):
+    text = _news_clean_input(req.text)
+    if not text:
+        return {"error": "Empty input."}
+    return _news_generate_summary(text, req.summary_length or "medium")
+
+
+@app.post("/news/headline")
+def news_headline(req: NewsGenerateRequest):
+    text = _news_clean_input(req.text)
+    if not text:
+        return {"error": "Empty input."}
+    return _news_generate_headline(text, req.headline_strategy or "beam")
+
+
+@app.post("/news/generate")
+def news_generate_both(req: NewsGenerateRequest):
+    """Generate both summary and headline in one request. Used by the UI."""
+    text = _news_clean_input(req.text)
+    if not text:
+        return {"text": "", "error": "Empty input."}
+
+    summary_result = _news_generate_summary(text, req.summary_length or "medium")
+    headline_result = _news_generate_headline(text, req.headline_strategy or "beam")
+
+    return {
+        "text": text,
+        "input_chars": len(text),
+        "summary": summary_result,
+        "headline": headline_result,
+    }
+
+
+@app.get("/news/health")
+def news_health():
+    return {
+        "summarizer": {
+            "status": "loaded" if _NEWS_SUMMARIZER is not None
+                       else ("error" if _NEWS_SUMMARIZER_ERROR else "not loaded"),
+            "model": "Falconsai/text_summarization",
+            "error": _NEWS_SUMMARIZER_ERROR,
+        },
+        "headliner": {
+            "status": "loaded" if _NEWS_HEADLINER is not None
+                       else ("error" if _NEWS_HEADLINER_ERROR else "not loaded"),
+            "model": "JulesBelveze/t5-small-headline-generator",
+            "error": _NEWS_HEADLINER_ERROR,
+        },
+        "note": "Models lazy-load on first request (~500 MB total download on first call).",
+    }
 # MACHINE TRANSLATION MODULE (English-to-Urdu)
 # ============================================================================
 
