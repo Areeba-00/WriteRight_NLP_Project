@@ -402,6 +402,79 @@ def complete_sentence(req: CompleteRequest):
         "bigram_used": bigram_used
     }
 
+_SPAM_SESSION = None
+_SPAM_TOKENIZER = None
+
+def load_spam_model():
+    global _SPAM_SESSION, _SPAM_TOKENIZER
+    if _SPAM_SESSION is not None and _SPAM_TOKENIZER is not None:
+        return _SPAM_SESSION, _SPAM_TOKENIZER
+
+    import os
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(base_dir, "models")
+    onnx_path = os.path.join(models_dir, "spam_model.onnx")
+    tokenizer_dir = os.path.join(models_dir, "spam_tokenizer")
+
+    # If model files don't exist (e.g. running manually outside Docker), convert dynamically
+    if not os.path.exists(onnx_path) or not os.path.exists(tokenizer_dir):
+        print("⚠️ ONNX spam model or tokenizer not found. Running conversion dynamically...")
+        try:
+            from convert_model import convert
+            convert()
+        except Exception as convert_err:
+            print(f"❌ Failed to run convert_model dynamically: {convert_err}")
+
+    # Now load them
+    try:
+        import onnxruntime as ort
+        from transformers import AutoTokenizer
+        
+        _SPAM_TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_dir)
+        _SPAM_SESSION = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+        print("✅ ONNX DistilBERT spam model loaded successfully.")
+    except Exception as e:
+        print(f"❌ Failed to load ONNX spam model: {e}")
+        _SPAM_SESSION = None
+        _SPAM_TOKENIZER = None
+
+    return _SPAM_SESSION, _SPAM_TOKENIZER
+
+
+def predict_spam(text: str) -> float:
+    """Predict the probability of a text being spam using the DistilBERT ONNX model.
+    Returns a float between 0.0 and 1.0.
+    """
+    session, tokenizer = load_spam_model()
+    if session is None or tokenizer is None:
+        return -1.0
+
+    try:
+        import numpy as np
+        inputs = tokenizer(
+            text,
+            return_tensors="np",
+            truncation=True,
+            max_length=512
+        )
+        
+        ort_inputs = {
+            "input_ids": inputs["input_ids"].astype(np.int64),
+            "attention_mask": inputs["attention_mask"].astype(np.int64)
+        }
+        
+        logits = session.run(["logits"], ort_inputs)[0]
+        
+        # Softmax
+        exp_logits = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
+        probs = exp_logits / np.sum(exp_logits, axis=-1, keepdims=True)
+        
+        return float(probs[0][1])
+    except Exception as e:
+        print(f"❌ Error during spam prediction: {e}")
+        return -1.0
+
+
 class DeliverabilityRequest(BaseModel):
     text: str
 
@@ -410,14 +483,13 @@ def analyze_deliverability(req: DeliverabilityRequest):
     text = req.text
     if not text.strip():
         return {
-            "score": 100,
-            "models": {"nb": "Clear", "svm": "Clear", "lr": "Clear"},
+            "score": 100.0,
+            "is_spam": False,
             "spam_errors": []
         }
 
-    # Common spam keywords to trigger the "TF-IDF" response internally
+    # Common spam keywords to trigger the highlights in the editor canvas
     spam_keywords = ["prize", "won", "urgent", "money", "free", "guarantee", "click", "winner", "cash", "act now", "action required"]
-    
     found_spam_words = [w for w in spam_keywords if w in text.lower()]
     spam_errors = []
     
@@ -432,25 +504,24 @@ def analyze_deliverability(req: DeliverabilityRequest):
                 "suggestions": []
             })
             
-    # Calculate pseudo-results
-    if found_spam_words:
-        score = max(0, 100 - (len(found_spam_words) * 20))
-        svm_vote = "Spam" if score < 70 else "Clear"
-        nb_vote = "Spam" if len(found_spam_words) >= 1 else "Clear"
-        lr_vote = "Spam" if score < 80 else "Clear"
+    # Run the DistilBERT ONNX model
+    spam_prob = predict_spam(text)
+    
+    if spam_prob >= 0.0:
+        score = round((1.0 - spam_prob) * 100, 1)
+        is_spam = spam_prob >= 0.5
     else:
-        score = 98
-        svm_vote = "Clear"
-        nb_vote = "Clear"
-        lr_vote = "Clear"
+        # Fallback to keyword-based score if model is unavailable
+        if found_spam_words:
+            score = float(max(0, 100 - (len(found_spam_words) * 20)))
+            is_spam = score < 70
+        else:
+            score = 98.0
+            is_spam = False
         
     return {
         "score": score,
-        "models": {
-            "nb": nb_vote,
-            "svm": svm_vote,
-            "lr": lr_vote
-        },
+        "is_spam": is_spam,
         "spam_errors": spam_errors
     }
 

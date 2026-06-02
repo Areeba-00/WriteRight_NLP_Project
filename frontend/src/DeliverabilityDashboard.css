@@ -54,10 +54,12 @@
   margin-bottom: 8px;
 }
 
-.dd-score-value {
-  font-size: 2rem;
+.dd-score-number {
+  font-size: 3rem;
   font-weight: 800;
   letter-spacing: -0.02em;
+  line-height: 1;
+  margin-bottom: 8px;
 }
 
 .score-empty {
@@ -182,3 +184,55 @@
   background-color: #fee2e2;
   color: #991b1b;
 }
+
+.dd-model-pill.dd-model-primary {
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+}
+
+.dd-model-pill.dd-model-primary .dd-model-name {
+  color: #5b21b6;
+  font-weight: 700;
+}
+
+.dd-score-badge {
+  display: inline-block;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 20px;
+  margin-top: 4px;
+  margin-bottom: 12px;
+}
+
+.dd-score-badge.badge-safe {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.dd-score-badge.badge-high-risk {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.dd-score-explanation {
+  font-size: 0.825rem;
+  color: #4b5563;
+  margin: 0 auto;
+  max-width: 280px;
+  line-height: 1.4;
+}
+
+.dd-model-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.dd-model-desc {
+  font-size: 0.725rem;
+  color: #6b7280;
+}
+
+

@@ -1,7 +1,9 @@
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --default-timeout=2000 -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt --default-timeout=2000 --extra-index-url https://download.pytorch.org/whl/cpu
+COPY convert_model.py .
+RUN python convert_model.py
 COPY . .
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

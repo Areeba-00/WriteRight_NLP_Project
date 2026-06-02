@@ -18,7 +18,7 @@ export default function DeliverabilityDashboard({ editorText, onSpamResult }) {
       
       const safeData = {
         score: data.score ?? 100,
-        models: data.models || { nb: "Clear", svm: "Clear", lr: "Clear" },
+        is_spam: data.is_spam ?? false,
         spam_errors: data.spam_errors || []
       };
 
@@ -34,8 +34,7 @@ export default function DeliverabilityDashboard({ editorText, onSpamResult }) {
     }
   };
 
-  const currentScore = result ? result.score : '?';
-  const isHighRisk = result && result.score < 70;
+  const isHighRisk = result && result.is_spam;
   
   return (
     <div className="dd-dashboard">
@@ -47,10 +46,22 @@ export default function DeliverabilityDashboard({ editorText, onSpamResult }) {
       <div className="dd-body">
         {/* Score Section */}
         <div className="dd-score-card">
-          <div className="dd-score-label">Deliverability Score</div>
-          <div className={`dd-score-value ${result ? (isHighRisk ? 'score-high-risk' : 'score-safe') : 'score-empty'}`}>
-             {result ? `${result.score}% ${isHighRisk ? 'High Risk' : 'Safe'}` : '- -'}
+          <div className="dd-score-label">Inbox Deliverability Probability</div>
+          <div className={`dd-score-number ${result ? (isHighRisk ? 'score-high-risk' : 'score-safe') : 'score-empty'}`}>
+             {result ? `${result.score}%` : '- -'}
           </div>
+          {result && (
+            <div className={`dd-score-badge ${isHighRisk ? 'badge-high-risk' : 'badge-safe'}`}>
+              {isHighRisk ? '⚠️ High Spam Risk' : '✅ Safe for Inbox'}
+            </div>
+          )}
+          {result && (
+            <p className="dd-score-explanation">
+              {isHighRisk 
+                ? "This draft contains language typical of spam filters. Modern email clients are highly likely to redirect it to the junk folder." 
+                : "Excellent copy! This email is highly likely to successfully bypass filter policies and land directly in the recipient's inbox."}
+            </p>
+          )}
         </div>
 
         {/* Action Button */}
@@ -60,7 +71,7 @@ export default function DeliverabilityDashboard({ editorText, onSpamResult }) {
            disabled={loading || !editorText.trim()}
         >
           {loading ? (
-             <><span className="dd-spinner"></span> Scanning Document...</>
+             <><span className="dd-spinner"></span> Analyzing Copy...</>
           ) : (
              "Scan Document"
           )}
@@ -70,19 +81,16 @@ export default function DeliverabilityDashboard({ editorText, onSpamResult }) {
         {/* Model Breakdown */}
         {result && (
           <div className="dd-models-breakdown">
-             <div className="dd-models-title">AI Model Classification</div>
+             <div className="dd-models-title">DistilBERT AI Analysis</div>
              <div className="dd-model-list">
-                <div className="dd-model-pill">
-                   <span className="dd-model-name">Naive Bayes</span>
-                   <span className={`dd-model-status ${result.models.nb === 'Spam' ? 'status-spam' : 'status-clear'}`}>{result.models.nb}</span>
-                </div>
-                <div className="dd-model-pill">
-                   <span className="dd-model-name">SVM</span>
-                   <span className={`dd-model-status ${result.models.svm === 'Spam' ? 'status-spam' : 'status-clear'}`}>{result.models.svm}</span>
-                </div>
-                <div className="dd-model-pill">
-                   <span className="dd-model-name">Logistic Regression</span>
-                   <span className={`dd-model-status ${result.models.lr === 'Spam' ? 'status-spam' : 'status-clear'}`}>{result.models.lr}</span>
+                <div className="dd-model-pill dd-model-primary">
+                   <div className="dd-model-info">
+                      <span className="dd-model-name">✨ DistilBERT Classifier</span>
+                      <span className="dd-model-desc">Transformer Sequence Classification Model</span>
+                   </div>
+                   <span className={`dd-model-status ${isHighRisk ? 'status-spam' : 'status-clear'}`}>
+                      {isHighRisk ? 'Spam' : 'Ham (Clear)'}
+                   </span>
                 </div>
              </div>
           </div>
