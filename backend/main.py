@@ -12,6 +12,9 @@ from deep_translator import GoogleTranslator
 import docx
 import pdfplumber
 import io
+from fastapi import APIRouter
+from pydantic import BaseModel
+from transformers import pipeline
 
 
 app = FastAPI(title="Word Editor API")
@@ -1053,3 +1056,33 @@ async def translate_document(file: UploadFile = File(...)):
         )
         
     return {"error": "Unsupported file format. Please upload a .docx or .pdf file."}
+
+try:
+    t5_model = pipeline("text2text-generation", model="t5-small")
+    print("✅ T5 Model loaded successfully.")
+except Exception as e:
+    print(f"⚠️ Warning: Failed to load T5 model. Error: {e}")
+    t5_model = None
+
+class NewsRequest(BaseModel):
+    text: str
+
+@app.post("/news/summarize")
+def summarize_news(req: NewsRequest):
+    if not req.text.strip() or t5_model is None:
+        return {"summary": "Error: Text empty or model unavailable."}
+    
+    prompt = f"summarize: {req.text}"
+    result = t5_model(prompt, max_length=150, min_length=40, do_sample=False)
+    return {"summary": result[0]["generated_text"]}
+
+@app.post("/news/headline")
+def generate_headline(req: NewsRequest):
+    if not req.text.strip() or t5_model is None:
+        return {"headline": "Error: Text empty or model unavailable."}
+    
+    prompt = f"headline: {req.text}" 
+    result = t5_model(prompt, max_length=20, min_length=5, do_sample=False)
+    headline_text = result[0]["generated_text"].title()
+    
+    return {"headline": headline_text}

@@ -837,7 +837,6 @@ export default function App() {
     }
   }
 
-  const RIBBON_TABS = ["Home", "Insert", "View", "Review", "🔬 Lab 5", "🚀 Deliverability", "🌐 Network NER", "📰 News NLP"];
   const RIBBON_TABS = [
     "Home",
     "Insert",
@@ -846,6 +845,7 @@ export default function App() {
     "🔬 Lab 5",
     "🚀 Deliverability",
     "🌐 Network NER",
+    "📰 News NLP",
     "🌍 Translation",
   ];
 
